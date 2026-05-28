@@ -14,7 +14,6 @@ PyInstaller.__main__.run([
     '--onefile',
     '--windowed',
     '--add-data=templates;templates',
-    '--add-data=static;static',
     '--icon=NONE',
     '--clean',
     '--noconfirm',
