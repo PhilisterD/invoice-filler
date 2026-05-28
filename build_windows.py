@@ -19,4 +19,4 @@ PyInstaller.__main__.run([
     '--noconfirm',
 ])
 
-print("打包完成！输出在 dist/早鸟天筹明细生成器.exe")
+print("Build complete: dist/invoice-filler.exe")
