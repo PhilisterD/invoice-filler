@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>编辑文档 - {{ filename }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fa;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .container {
+            background: #fff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            width: 720px;
+        }
+        h1 {
+            text-align: center;
+            font-size: 20px;
+            margin-bottom: 24px;
+        }
+        .field {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #444;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #0969da;
+            box-shadow: 0 0 0 3px rgba(9,105,218,0.1);
+        }
+        .rows-section {
+            margin-top: 24px;
+            margin-bottom: 16px;
+        }
+        .rows-section h3 {
+            font-size: 15px;
+            margin-bottom: 12px;
+        }
+        .row-item {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .row-item input {
+            flex: 3;
+            padding: 8px 10px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .row-item input.qty, .row-item input.price {
+            flex: 1;
+        }
+        .row-item .remove-btn {
+            padding: 8px 12px;
+            background: #cf222e;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .add-btn {
+            padding: 8px 16px;
+            background: #eaeef2;
+            color: #333;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+        .add-btn:hover { background: #d0d7de; }
+        .actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 24px;
+        }
+        .btn {
+            padding: 12px 32px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .btn-primary { background: #0969da; color: #fff; }
+        .btn-primary:hover { background: #0550ae; }
+        .btn-secondary { background: #eaeef2; color: #333; }
+        .btn-secondary:hover { background: #d0d7de; }
+        .note {
+            font-size: 13px;
+            color: #666;
+            background: #f6f8fa;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>编辑 {{ filename }}</h1>
+        <div class="note">修改后合计和总计会自动重新计算，大写金额也会自动更新。</div>
+
+        <form action="/edit/{{ filename }}" method="post">
+            <div class="field">
+                <label for="party">受托方</label>
+                <input type="text" name="party" id="party" value="{{ data.party }}" required>
+            </div>
+            <div class="field">
+                <label for="date">日期</label>
+                <input type="text" name="date" id="date" value="{{ data.date }}" placeholder="2024年01月01日" required>
+            </div>
+
+            <div class="rows-section">
+                <h3>明细记录</h3>
+                <div id="rows-container">
+                    {% for row in rows %}
+                    <div class="row-item">
+                        <input type="text" name="service[]" placeholder="服务内容" value="{{ row.service }}" required>
+                        <input type="text" name="quantity[]" class="qty" placeholder="数量" value="{{ row.quantity }}" required>
+                        <input type="text" name="price[]" class="price" placeholder="单价" value="{{ row.price }}" required>
+                        <button type="button" class="remove-btn" onclick="this.parentElement.remove()">删除</button>
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="button" class="add-btn" onclick="addRow()">+ 添加一行</button>
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">保存修改</button>
+                <a href="/preview/{{ filename }}" class="btn btn-secondary">取消</a>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        function addRow() {
+            const container = document.getElementById('rows-container');
+            const div = document.createElement('div');
+            div.className = 'row-item';
+            div.innerHTML = `
+                <input type="text" name="service[]" placeholder="服务内容" required>
+                <input type="text" name="quantity[]" class="qty" placeholder="数量" required>
+                <input type="text" name="price[]" class="price" placeholder="单价" required>
+                <button type="button" class="remove-btn" onclick="this.parentElement.remove()">删除</button>
+            `;
+            container.appendChild(div);
+        }
+    </script>
+</body>
+</html>
