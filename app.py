@@ -256,9 +256,15 @@ def download_all():
 
 
 def open_browser():
-    webbrowser.open('http://127.0.0.1:5000/')
+    webbrowser.open('http://localhost:5001/')
 
 
 if __name__ == '__main__':
+    import socket
+    hostname = socket.gethostname()
+    local_ip = socket.getaddrinfo(hostname, None)[0][4][0]
+    print(f"Flask 应用已启动!")
+    print(f"本地访问: http://localhost:5001")
+    print(f"局域网访问: http://{local_ip}:5001")
     Timer(1.5, open_browser).start()
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False)

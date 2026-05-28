@@ -104,10 +104,16 @@
             </thead>
             <tbody>
                 {% for row in data.rows[1:] %}
-                <tr class="{% if '测试费用总共' in row.cells[0] %}summary{% endif %}">
-                    {% for cell in row.cells %}
-                    <td>{{ cell }}</td>
-                    {% endfor %}
+                {% set is_summary = '测试费用总共' in row.cells[0] %}
+                <tr class="{% if is_summary %}summary{% endif %}">
+                    {% if is_summary %}
+                        {% set col_count = data.rows[0].cells|length %}
+                        <td colspan="{{ col_count }}">{{ row.cells[0] }}</td>
+                    {% else %}
+                        {% for cell in row.cells %}
+                        <td>{{ cell }}</td>
+                        {% endfor %}
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
