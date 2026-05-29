@@ -267,7 +267,7 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
         person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
         safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
         safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
-        filename = f"{safe_person}_{safe_party}_{int(total_sum)}_明细.docx"
+        filename = f"{safe_person}_{safe_party}_{int(total_sum)}.docx"
         out_path = os.path.join(output_dir, filename)
         doc.save(out_path)
         results.append({
