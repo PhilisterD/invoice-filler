@@ -29,15 +29,15 @@ jobs:
       - name: Package with template file
         run: |
           mkdir release
-          copy "dist\早鸟天筹明细生成器.exe" release\
-          copy "早鸟天筹明细-模板.docx" release\模板.docx
+          copy "dist\invoice-filler.exe" release\
+          copy "template.docx" release\
           cd release
-          tar -acf "早鸟天筹明细生成器.zip" "早鸟天筹明细生成器.exe" "模板.docx"
+          tar -acf "invoice-filler.zip" "invoice-filler.exe" "template.docx"
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 早鸟天筹明细生成器-Windows
+          name: invoice-filler-windows
           path: release/*.zip
 
       - name: Create Release

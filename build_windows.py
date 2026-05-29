@@ -1,14 +1,12 @@
 """
-Windows 打包脚本
-在 Windows 上运行：python build_windows.py
+Windows build script
+Run on Windows: python build_windows.py
 """
 import PyInstaller.__main__
 import os
-import sys
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
-# PyInstaller 需要显式声明 pandas/numpy 的隐藏导入，否则 C 扩展会缺失
 hidden_imports = [
     '--hidden-import=numpy.core._dtype_ctypes',
     '--hidden-import=numpy.core._multiarray_umath',
@@ -54,7 +52,6 @@ hidden_imports = [
     '--collect-submodules=docx.oxml',
 ]
 
-# 如果有 static 目录也加进去
 add_data = []
 if os.path.exists(os.path.join(base_dir, 'templates')):
     add_data.append('--add-data=templates;templates')
@@ -63,7 +60,7 @@ if os.path.exists(os.path.join(base_dir, 'static')):
 
 args = [
     'app.py',
-    '--name=早鸟天筹明细生成器',
+    '--name=invoice-filler',
     '--onefile',
     '--windowed',
     '--clean',
