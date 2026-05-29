@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import webbrowser
 import zipfile
 from threading import Timer
@@ -10,9 +11,18 @@ from docx import Document
 from filler import fill_template, set_cell_text
 from utils import num_to_chinese
 
+
+def get_resource_path(relative_path):
+    """Get absolute path to a resource, works for dev and PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+
 app = Flask(__name__)
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+TEMPLATE_PATH = get_resource_path('template.docx')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
@@ -68,21 +78,18 @@ def index():
 def process():
     global results_cache
     excel_file = request.files.get('excel')
-    template_file = request.files.get('template')
 
-    if not excel_file or not template_file:
-        return '需要上传 Excel 和 Word 模板两个文件', 400
+    if not excel_file:
+        return '需要上传 Excel 明细表', 400
 
     excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
-    template_path = os.path.join(UPLOAD_FOLDER, template_file.filename)
     excel_file.save(excel_path)
-    template_file.save(template_path)
 
     # 清空旧输出
     for f in os.listdir(OUTPUT_FOLDER):
         os.remove(os.path.join(OUTPUT_FOLDER, f))
 
-    results_cache = fill_template(excel_path, template_path, OUTPUT_FOLDER)
+    results_cache = fill_template(excel_path, TEMPLATE_PATH, OUTPUT_FOLDER)
     return redirect(url_for('result'))
 
 
