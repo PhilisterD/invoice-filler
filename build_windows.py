@@ -71,10 +71,10 @@ args = [
 ] + add_data + hidden_imports
 
 print("=" * 60)
-print("开始打包，参数：")
+print("Building with args:")
 for a in args:
     print(f"  {a}")
 print("=" * 60)
 
 PyInstaller.__main__.run(args)
-print("\n打包完成！文件位于: dist/早鸟天筹明细生成器.exe")
+print("\nBuild complete! Output: dist/")
