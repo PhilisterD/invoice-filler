@@ -100,8 +100,10 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
     rename_map = {}
     for col in df.columns:
         c = str(col).strip()
-        if '受托方' in c:
+        if '受托方' in c or '委托方' in c:
             rename_map[col] = '受托方'
+        elif '姓名' in c:
+            rename_map[col] = '姓名'
         elif '服务内容' in c:
             rename_map[col] = '服务内容'
         elif '数量' in c and '单价' not in c and '合计' not in c:
@@ -262,8 +264,10 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
         remove_all_highlights(doc)
 
         # ---- 5. 保存 ----
-        safe_name = re.sub(r'[\\/:*?"<>|]', '_', str(party))
-        filename = f"{safe_name}_明细.docx"
+        person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
+        safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
+        safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
+        filename = f"{safe_person}_{safe_party}_{int(total_sum)}_明细.docx"
         out_path = os.path.join(output_dir, filename)
         doc.save(out_path)
         results.append({
