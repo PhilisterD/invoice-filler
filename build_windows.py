@@ -70,11 +70,4 @@ args = [
     '--noconfirm',
 ] + add_data + hidden_imports
 
-print("=" * 60)
-print("Building with args:")
-for a in args:
-    print(f"  {a}")
-print("=" * 60)
-
 PyInstaller.__main__.run(args)
-print("\nBuild complete! Output: dist/")
