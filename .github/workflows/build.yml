@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -23,8 +26,27 @@ jobs:
       - name: Build EXE with PyInstaller
         run: python build_windows.py
 
+      - name: Package with template file
+        run: |
+          mkdir release
+          copy "dist\早鸟天筹明细生成器.exe" release\
+          copy "早鸟天筹明细-模板.docx" release\模板.docx
+          cd release
+          tar -acf "早鸟天筹明细生成器.zip" "早鸟天筹明细生成器.exe" "模板.docx"
+
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: invoice-filler-exe
-          path: dist/*.exe
+          name: 早鸟天筹明细生成器-Windows
+          path: release/*.zip
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          files: release/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
