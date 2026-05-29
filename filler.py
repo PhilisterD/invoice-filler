@@ -48,26 +48,38 @@ def find_table_rows_with_yellow(table):
 
 
 def set_cell_text(cell, text):
-    """安全设置单元格文本，保留黄色高亮样式"""
+    """安全设置单元格文本，保留第一个 run 的样式"""
     p = cell.paragraphs[0]
-    yellow_idx = None
-    for i, run in enumerate(p.runs):
-        if is_yellow_highlight(run):
-            yellow_idx = i
-            break
-    if yellow_idx is not None:
-        run = p.runs[yellow_idx]
-        run.text = text
-        for i, r in enumerate(p.runs):
-            if i != yellow_idx:
-                r.text = ""
+    if p.runs:
+        p.runs[0].text = text
+        for r in p.runs[1:]:
+            r.text = ""
     else:
-        if p.runs:
-            p.runs[0].text = text
-            for r in p.runs[1:]:
-                r.text = ""
-        else:
-            p.add_run(text)
+        p.add_run(text)
+
+
+def remove_highlight_from_run(run):
+    """清除 run 的高亮和底纹"""
+    run.font.highlight_color = None
+    rPr = run._element.find(qn('w:rPr'))
+    if rPr is not None:
+        for hl in rPr.findall(qn('w:highlight')):
+            rPr.remove(hl)
+        for shd in rPr.findall(qn('w:shd')):
+            rPr.remove(shd)
+
+
+def remove_all_highlights(doc):
+    """清除文档中所有段落和表格的高亮"""
+    for p in doc.paragraphs:
+        for run in p.runs:
+            remove_highlight_from_run(run)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        remove_highlight_from_run(run)
 
 
 def copy_row_xml(table, source_row_idx):
@@ -246,7 +258,10 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
                 seen_tc.add(tc)
                 set_cell_text(cell, summary_text)
 
-        # ---- 4. 保存 ----
+        # ---- 4. 清除所有黄色高亮 ----
+        remove_all_highlights(doc)
+
+        # ---- 5. 保存 ----
         safe_name = re.sub(r'[\\/:*?"<>|]', '_', str(party))
         filename = f"{safe_name}_明细.docx"
         out_path = os.path.join(output_dir, filename)

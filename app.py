@@ -100,6 +100,35 @@ def preview(filename):
     return render_template('preview.html', filename=filename, data=data)
 
 
+@app.route('/rename/<filename>', methods=['POST'])
+def rename(filename):
+    path = os.path.join(OUTPUT_FOLDER, filename)
+    if not os.path.exists(path):
+        return '文件不存在', 404
+
+    new_name = request.form.get('new_name', '').strip()
+    if not new_name:
+        return '文件名不能为空', 400
+    if not new_name.lower().endswith('.docx'):
+        new_name += '.docx'
+
+    safe_name = re.sub(r'[\\/:*?"<>|]', '_', new_name)
+    new_path = os.path.join(OUTPUT_FOLDER, safe_name)
+
+    if os.path.exists(new_path) and new_path != path:
+        return '文件名已存在', 400
+
+    os.rename(path, new_path)
+
+    for r in results_cache:
+        if r['filename'] == filename:
+            r['filename'] = safe_name
+            r['path'] = new_path
+            break
+
+    return redirect(url_for('result'))
+
+
 @app.route('/edit/<filename>', methods=['GET', 'POST'])
 def edit(filename):
     path = os.path.join(OUTPUT_FOLDER, filename)
