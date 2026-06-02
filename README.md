@@ -53,6 +53,15 @@ dist/早鸟天筹明细生成器.exe
 
 双击 exe 即可运行，无需安装 Python。
 
+## GitHub Release 下载
+
+仓库的 GitHub Actions 会在 `main` 分支推送后自动构建 Windows 版本，并把发布包放到 GitHub Releases。下载后解压即可使用，包内通常包含：
+
+- `invoice-filler.exe`：主程序
+- `template.docx`：默认模板文件
+
+运行时会在 exe 同级自动创建 `uploads/` 和 `output/`，所以你把自定义模板放在 exe 同级的 `uploads/` 里即可持久保存。
+
 ## 使用说明
 
 1. 准备 Excel 明细表，需包含以下列：

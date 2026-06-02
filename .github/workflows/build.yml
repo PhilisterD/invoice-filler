@@ -26,19 +26,19 @@ jobs:
       - name: Build EXE with PyInstaller
         run: python build_windows.py
 
-      - name: Package with template file
+      - name: Package release files
+        shell: pwsh
         run: |
-          mkdir release
-          copy "dist\invoice-filler.exe" release\
-          copy "template.docx" release\
-          cd release
-          tar -acf "invoice-filler.zip" "invoice-filler.exe" "template.docx"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "dist\invoice-filler.exe" release\
+          Copy-Item "template.docx" release\
+          Compress-Archive -Path "release\invoice-filler.exe", "release\template.docx" -DestinationPath "release\invoice-filler-windows.zip" -Force
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: invoice-filler-windows
-          path: release/*.zip
+          path: release/invoice-filler-windows.zip
 
       - name: Create Release
         if: github.ref == 'refs/heads/main'
@@ -46,7 +46,7 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}
           name: Release v${{ github.run_number }}
-          files: release/*.zip
+          files: release/invoice-filler-windows.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
