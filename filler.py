@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from copy import deepcopy
 from datetime import datetime
 
@@ -10,6 +11,9 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from utils import num_to_chinese, format_date
+
+
+logger = logging.getLogger('invoice-filler')
 
 
 def is_yellow_highlight(run) -> bool:
@@ -252,11 +256,14 @@ def copy_row_xml(table, source_row_idx):
     tbl.insert(actual_idx + 1, new_tr)
 
 
-def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[dict]:
+def fill_template(excel_path: str, template_path: str, output_dir: str, logger=None) -> list[dict]:
     """
     读取Excel，按受托方分组，为每组生成一个Word文档。
     返回生成文件的信息列表。
     """
+    active_logger = logger or globals()['logger']
+
+    active_logger.info('读取 Excel: %s', excel_path)
     df = pd.read_excel(excel_path)
     rename_map = {}
     for col in df.columns:
@@ -281,6 +288,8 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
             rename_map[col] = '序号'
     df.rename(columns=rename_map, inplace=True)
 
+    active_logger.info('识别到列: %s', list(df.columns))
+
     for col in ['数量', '单价', '合计', '总计']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -288,159 +297,183 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
     grouped = df.groupby('受托方', sort=False)
     results = []
 
+    active_logger.info('开始分组处理: %s 个受托方', grouped.ngroups)
+
     for party, group in grouped:
-        group = group.sort_values('序号') if '序号' in group.columns else group
-        doc = Document(template_path)
+        try:
+            group = group.sort_values('序号') if '序号' in group.columns else group
+            active_logger.info('处理受托方: %s, 记录数=%s', party, len(group))
+            doc = Document(template_path)
 
-        # ---- 1. 替换文档中黄色高亮的文本（委托方、日期） ----
-        for p in doc.paragraphs:
-            yellow_indices = find_yellow_runs(p)
-            for idx in yellow_indices:
-                run = p.runs[idx]
-                text = run.text
-                if any(kw in text for kw in ['研究所', '大学', '公司', '学院', '中心']):
-                    run.text = str(party)
-                elif re.search(r'\d{4}年\d{1,2}月\d{1,2}日', text):
-                    date_val = group['日期'].iloc[0]
-                    run.text = format_date(date_val)
+            # ---- 1. 替换文档中黄色高亮的文本（委托方、日期） ----
+            active_logger.info('替换模板高亮文本')
+            for p in doc.paragraphs:
+                yellow_indices = find_yellow_runs(p)
+                for idx in yellow_indices:
+                    run = p.runs[idx]
+                    text = run.text
+                    if any(kw in text for kw in ['研究所', '大学', '公司', '学院', '中心']):
+                        run.text = str(party)
+                    elif re.search(r'\d{4}年\d{1,2}月\d{1,2}日', text):
+                        date_val = group['日期'].iloc[0]
+                        run.text = format_date(date_val)
 
-        # ---- 2. 处理表格 ----
-        if not doc.tables:
+            # ---- 2. 处理表格 ----
+            if not doc.tables:
+                active_logger.warning('模板中没有表格: %s', template_path)
+                results.append({
+                    'party': party,
+                    'filename': f"{party}_明细.docx",
+                    'path': None,
+                    'error': '模板中没有表格'
+                })
+                continue
+
+            table = doc.tables[0]
+            data_row_idx, summary_row_idx, yellow_rows = detect_table_layout(table)
+            active_logger.info('表格布局识别: data_row_idx=%s summary_row_idx=%s yellow_rows=%s',
+                               data_row_idx, summary_row_idx, yellow_rows)
+
+            if data_row_idx is None or summary_row_idx is None:
+                active_logger.error('无法识别模板中的数据行和汇总行')
+                results.append({
+                    'party': party,
+                    'filename': f"{party}_明细.docx",
+                    'path': None,
+                    'error': '无法识别模板中的数据行和汇总行'
+                })
+                continue
+
+            # 获取列结构
+            header_row = table.rows[0]
+            headers = [cell.text.strip() for cell in header_row.cells]
+            col_map = {}
+            for i, h in enumerate(headers):
+                if '服务' in h or '内容' in h:
+                    col_map['服务内容'] = i
+                elif '数量' in h:
+                    col_map['数量'] = i
+                elif '单价' in h:
+                    col_map['单价'] = i
+                elif '合计' in h and '总计' not in h:
+                    col_map['合计'] = i
+                elif '总计' in h:
+                    col_map['总计'] = i
+
+            records = group.to_dict('records')
+            active_logger.info('列映射: %s', col_map)
+
+            # 删除多余数据行，只保留第一个作为模板
+            existing_data_rows = max(1, summary_row_idx - data_row_idx)
+            tbl = table._tbl
+            for _ in range(existing_data_rows - 1):
+                # 删除 data_row_idx + 1（第二个数据行），反复删直到只剩一个
+                tr_to_remove = table.rows[data_row_idx + 1]._tr
+                tbl.remove(tr_to_remove)
+
+            # 清空保留的模板行
+            data_row = table.rows[data_row_idx]
+            for cell in data_row.cells:
+                set_cell_text(cell, "")
+
+            # 插入副本（需要记录数 - 1 个新行）
+            for _ in range(len(records) - 1):
+                copy_row_xml(table, data_row_idx)
+
+            # 重新打开文档以刷新 table.rows（python-docx 缓存问题）
+            temp_path = os.path.join(output_dir, '_temp.docx')
+            doc.save(temp_path)
+            doc = Document(temp_path)
+            os.remove(temp_path)
+            table = doc.tables[0]
+
+            # 重新定位行索引
+            data_row_idx, summary_row_idx, _ = detect_table_layout(table)
+            if data_row_idx is None or summary_row_idx is None:
+                active_logger.warning('刷新后无法重新识别数据行或汇总行: %s', party)
+                continue
+
+            # 填充数据行
+            total_sum = 0
+            merge_row_indices = []
+            for i, rec in enumerate(records):
+                target_row = table.rows[data_row_idx + i]
+                service = str(rec.get('服务内容', ''))
+                qty = rec.get('数量', 0)
+                price = rec.get('单价', 0)
+                subtotal = rec.get('合计', 0)
+                if pd.isna(subtotal) or subtotal == 0:
+                    subtotal = (qty or 0) * (price or 0)
+                total_sum += subtotal
+                active_logger.info('写入明细行 %s/%s: 服务=%s 数量=%s 单价=%s 合计=%s',
+                                   i + 1, len(records), service, qty, price, subtotal)
+                if has_numeric_value(subtotal):
+                    merge_row_indices.append(data_row_idx + i)
+
+                cells = target_row.cells
+                if '服务内容' in col_map and col_map['服务内容'] < len(cells):
+                    set_cell_text(cells[col_map['服务内容']], service)
+                if '数量' in col_map and col_map['数量'] < len(cells):
+                    set_cell_text(cells[col_map['数量']], str(int(qty)) if qty == int(qty) else str(qty))
+                if '单价' in col_map and col_map['单价'] < len(cells):
+                    set_cell_text(cells[col_map['单价']], str(int(price)) if price == int(price) else str(price))
+                if '合计' in col_map and col_map['合计'] < len(cells):
+                    set_cell_text(cells[col_map['合计']], str(int(subtotal)) if subtotal == int(subtotal) else str(subtotal))
+
+            active_logger.info('明细写入完成: total_sum=%s', total_sum)
+
+            # 填充总计列（只在第一行设置，然后安全地尝试纵向合并）
+            total_col = col_map.get('总计', len(table.rows[0].cells) - 1)
+            for ri in range(data_row_idx, summary_row_idx):
+                row = table.rows[ri]
+                if total_col < len(row.cells):
+                    cell = row.cells[total_col]
+                    if ri == data_row_idx:
+                        set_cell_text(cell, str(int(total_sum)) if total_sum == int(total_sum) else str(total_sum))
+                    else:
+                        set_cell_text(cell, "")
+
+            # 纵向合并总计列单元格：只合并“合计/元”有数值的明细行
+            merge_total_column_span(table, merge_row_indices, total_col)
+
+            # 填充汇总行（合并单元格中多个 cell 可能共享同一个 XML 元素，需要去重）
+            summary_row = table.rows[summary_row_idx]
+            if summary_row.cells:
+                seen_tc = set()
+                summary_text = build_summary_text(total_sum, summary_row)
+                for cell in summary_row.cells:
+                    tc = cell._tc
+                    if tc in seen_tc:
+                        continue
+                    seen_tc.add(tc)
+                    set_cell_text(cell, summary_text)
+
+            # ---- 4. 清除所有黄色高亮 ----
+            remove_all_highlights(doc)
+
+            # ---- 5. 保存 ----
+            person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
+            safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
+            safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
+            filename = f"{safe_person}_{safe_party}_{int(total_sum)}元明细.docx"
+            out_path = os.path.join(output_dir, filename)
+            doc.save(out_path)
+            active_logger.info('文件保存完成: %s', out_path)
+            results.append({
+                'party': party,
+                'filename': filename,
+                'path': out_path,
+                'records': len(records),
+                'total': int(total_sum)
+            })
+        except Exception:
+            active_logger.exception('处理受托方失败: %s', party)
             results.append({
                 'party': party,
                 'filename': f"{party}_明细.docx",
                 'path': None,
-                'error': '模板中没有表格'
+                'error': '生成过程中发生异常，请查看日志'
             })
-            continue
-
-        table = doc.tables[0]
-        data_row_idx, summary_row_idx, yellow_rows = detect_table_layout(table)
-
-        if data_row_idx is None or summary_row_idx is None:
-            results.append({
-                'party': party,
-                'filename': f"{party}_明细.docx",
-                'path': None,
-                'error': '无法识别模板中的数据行和汇总行'
-            })
-            continue
-
-        # 获取列结构
-        header_row = table.rows[0]
-        headers = [cell.text.strip() for cell in header_row.cells]
-        col_map = {}
-        for i, h in enumerate(headers):
-            if '服务' in h or '内容' in h:
-                col_map['服务内容'] = i
-            elif '数量' in h:
-                col_map['数量'] = i
-            elif '单价' in h:
-                col_map['单价'] = i
-            elif '合计' in h and '总计' not in h:
-                col_map['合计'] = i
-            elif '总计' in h:
-                col_map['总计'] = i
-
-        records = group.to_dict('records')
-
-        # 删除多余数据行，只保留第一个作为模板
-        existing_data_rows = max(1, summary_row_idx - data_row_idx)
-        tbl = table._tbl
-        for _ in range(existing_data_rows - 1):
-            # 删除 data_row_idx + 1（第二个数据行），反复删直到只剩一个
-            tr_to_remove = table.rows[data_row_idx + 1]._tr
-            tbl.remove(tr_to_remove)
-
-        # 清空保留的模板行
-        data_row = table.rows[data_row_idx]
-        for cell in data_row.cells:
-            set_cell_text(cell, "")
-
-        # 插入副本（需要记录数 - 1 个新行）
-        for _ in range(len(records) - 1):
-            copy_row_xml(table, data_row_idx)
-
-        # 重新打开文档以刷新 table.rows（python-docx 缓存问题）
-        temp_path = os.path.join(output_dir, '_temp.docx')
-        doc.save(temp_path)
-        doc = Document(temp_path)
-        os.remove(temp_path)
-        table = doc.tables[0]
-
-        # 重新定位行索引
-        data_row_idx, summary_row_idx, _ = detect_table_layout(table)
-        if data_row_idx is None or summary_row_idx is None:
-            continue
-
-        # 填充数据行
-        total_sum = 0
-        merge_row_indices = []
-        for i, rec in enumerate(records):
-            target_row = table.rows[data_row_idx + i]
-            service = str(rec.get('服务内容', ''))
-            qty = rec.get('数量', 0)
-            price = rec.get('单价', 0)
-            subtotal = rec.get('合计', 0)
-            if pd.isna(subtotal) or subtotal == 0:
-                subtotal = (qty or 0) * (price or 0)
-            total_sum += subtotal
-            if has_numeric_value(subtotal):
-                merge_row_indices.append(data_row_idx + i)
-
-            cells = target_row.cells
-            if '服务内容' in col_map and col_map['服务内容'] < len(cells):
-                set_cell_text(cells[col_map['服务内容']], service)
-            if '数量' in col_map and col_map['数量'] < len(cells):
-                set_cell_text(cells[col_map['数量']], str(int(qty)) if qty == int(qty) else str(qty))
-            if '单价' in col_map and col_map['单价'] < len(cells):
-                set_cell_text(cells[col_map['单价']], str(int(price)) if price == int(price) else str(price))
-            if '合计' in col_map and col_map['合计'] < len(cells):
-                set_cell_text(cells[col_map['合计']], str(int(subtotal)) if subtotal == int(subtotal) else str(subtotal))
-
-        # 填充总计列（只在第一行设置，然后安全地尝试纵向合并）
-        total_col = col_map.get('总计', len(table.rows[0].cells) - 1)
-        for ri in range(data_row_idx, summary_row_idx):
-            row = table.rows[ri]
-            if total_col < len(row.cells):
-                cell = row.cells[total_col]
-                if ri == data_row_idx:
-                    set_cell_text(cell, str(int(total_sum)) if total_sum == int(total_sum) else str(total_sum))
-                else:
-                    set_cell_text(cell, "")
-
-        # 纵向合并总计列单元格：只合并“合计/元”有数值的明细行
-        merge_total_column_span(table, merge_row_indices, total_col)
-
-        # 填充汇总行（合并单元格中多个 cell 可能共享同一个 XML 元素，需要去重）
-        summary_row = table.rows[summary_row_idx]
-        if summary_row.cells:
-            seen_tc = set()
-            summary_text = build_summary_text(total_sum, summary_row)
-            for cell in summary_row.cells:
-                tc = cell._tc
-                if tc in seen_tc:
-                    continue
-                seen_tc.add(tc)
-                set_cell_text(cell, summary_text)
-
-        # ---- 4. 清除所有黄色高亮 ----
-        remove_all_highlights(doc)
-
-        # ---- 5. 保存 ----
-        person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
-        safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
-        safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
-        filename = f"{safe_person}_{safe_party}_{int(total_sum)}元明细.docx"
-        out_path = os.path.join(output_dir, filename)
-        doc.save(out_path)
-        results.append({
-            'party': party,
-            'filename': filename,
-            'path': out_path,
-            'records': len(records),
-            'total': int(total_sum)
-        })
 
     return results
 
