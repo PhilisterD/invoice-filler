@@ -36,6 +36,8 @@ python app.py
 
 自动打开浏览器访问 http://127.0.0.1:5000/
 
+运行日志会写到 `log/invoice-filler.log`，也可以直接访问 http://127.0.0.1:5001/log 查看最近处理步骤。
+
 ## Windows 打包（生成 exe）
 
 在 Windows 电脑上：

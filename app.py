@@ -1,14 +1,19 @@
+import logging
 import os
 import re
 import sys
+import time
+import traceback
 import webbrowser
 import zipfile
 import shutil
+from logging.handlers import RotatingFileHandler
 from threading import Timer
 import subprocess
 
-from flask import Flask, render_template, request, send_file, redirect, url_for
+from flask import Flask, g, render_template, request, send_file, redirect, url_for
 from docx import Document
+from werkzeug.exceptions import HTTPException
 
 from filler import (
     build_summary_text,
@@ -41,8 +46,45 @@ else:
 
 UPLOAD_FOLDER = os.path.join(runtime_root, 'uploads')
 OUTPUT_FOLDER = os.path.join(runtime_root, 'output')
+LOG_FOLDER = os.path.join(runtime_root, 'log')
+LOG_FILE = os.path.join(LOG_FOLDER, 'invoice-filler.log')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(LOG_FOLDER, exist_ok=True)
+
+
+def configure_logging():
+    logger = logging.getLogger('invoice-filler')
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=1024 * 1024,
+            backupCount=5,
+            encoding='utf-8',
+        )
+        file_handler.setFormatter(formatter)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+    return logger
+
+
+logger = configure_logging()
+
+
+def log_step(message, **fields):
+    if fields:
+        extra = ' | '.join(f'{key}={value}' for key, value in fields.items())
+        logger.info('%s | %s', message, extra)
+    else:
+        logger.info(message)
 
 # On first run, if bundled templates exist and runtime uploads is empty, copy them there for easy editing
 if os.path.exists(BUNDLED_UPLOADS) and not os.listdir(UPLOAD_FOLDER):
@@ -57,6 +99,45 @@ if os.path.exists(BUNDLED_UPLOADS) and not os.listdir(UPLOAD_FOLDER):
         pass
 
 results_cache = []
+
+
+@app.before_request
+def log_request_start():
+    g.request_start_time = time.time()
+    logger.info(
+        'HTTP %s %s from %s',
+        request.method,
+        request.path,
+        request.remote_addr or '-',
+    )
+
+
+@app.after_request
+def log_request_end(response):
+    start_time = getattr(g, 'request_start_time', None)
+    if start_time is not None:
+        duration_ms = (time.time() - start_time) * 1000
+        logger.info(
+            'HTTP %s %s -> %s in %.1fms',
+            request.method,
+            request.path,
+            response.status_code,
+            duration_ms,
+        )
+    return response
+
+
+@app.errorhandler(Exception)
+def log_unhandled_exception(exc):
+    if isinstance(exc, HTTPException):
+        return exc
+    logger.error(
+        'Unhandled error on %s %s\n%s',
+        request.method,
+        request.path,
+        traceback.format_exc(),
+    )
+    return '服务器发生内部错误，请查看日志', 500
 
 
 def read_docx_data(path):
@@ -113,11 +194,19 @@ def process():
     excel_file = request.files.get('excel')
     template_name = request.form.get('template', '').strip()
 
+    log_step(
+        '开始处理上传请求',
+        excel=excel_file.filename if excel_file else '',
+        template=template_name or '默认模板',
+    )
+
     if not excel_file:
+        logger.warning('缺少 Excel 文件上传')
         return '需要上传 Excel 明细表', 400
 
     excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
     excel_file.save(excel_path)
+    log_step('Excel 已保存', path=excel_path)
 
     # 确定模板路径：自定义上传 > 预设选择 > 默认
     custom_template_file = request.files.get('custom_template')
@@ -125,6 +214,7 @@ def process():
         custom_path = os.path.join(UPLOAD_FOLDER, custom_template_file.filename)
         custom_template_file.save(custom_path)
         selected_template = custom_path
+        log_step('使用自定义模板', path=selected_template)
     elif template_name:
         # Prefer runtime (writable) uploads, fall back to bundled templates included in the exe
         runtime_candidate = os.path.join(UPLOAD_FOLDER, template_name)
@@ -135,23 +225,39 @@ def process():
             selected_template = bundled_candidate
         else:
             selected_template = TEMPLATE_PATH
+        log_step('使用选择的模板', path=selected_template)
     else:
         selected_template = TEMPLATE_PATH
+        log_step('使用默认模板', path=selected_template)
 
     if not os.path.exists(selected_template):
+        logger.warning('模板文件不存在: %s', template_name)
         return f'模板文件不存在: {template_name}', 400
 
     # 清空旧输出
+    log_step('清空旧输出目录', output_dir=OUTPUT_FOLDER)
     for f in os.listdir(OUTPUT_FOLDER):
         os.remove(os.path.join(OUTPUT_FOLDER, f))
 
-    results_cache = fill_template(excel_path, selected_template, OUTPUT_FOLDER)
+    log_step('开始调用填充逻辑')
+    results_cache = fill_template(excel_path, selected_template, OUTPUT_FOLDER, logger=logger)
+    log_step('填充逻辑完成', results=len(results_cache))
     return redirect(url_for('result'))
 
 
 @app.route('/result')
 def result():
     return render_template('result.html', results=results_cache)
+
+
+@app.route('/log')
+def log_view():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+            log_text = ''.join(f.readlines()[-300:])
+    else:
+        log_text = '暂无日志'
+    return render_template('log.html', log_text=log_text, log_file=LOG_FILE)
 
 
 @app.route('/preview/<filename>')
@@ -182,6 +288,7 @@ def rename(filename):
         return '文件名已存在', 400
 
     os.rename(path, new_path)
+    log_step('重命名文件', old=filename, new=safe_name)
 
     for r in results_cache:
         if r['filename'] == filename:
@@ -199,6 +306,7 @@ def edit(filename):
         return '文件不存在', 404
 
     if request.method == 'POST':
+        log_step('开始编辑文档', filename=filename)
         doc = Document(path)
         new_party = request.form.get('party', '').strip()
         new_date = request.form.get('date', '').strip()
@@ -299,6 +407,7 @@ def edit(filename):
                     set_cell_text(cell, summary_text)
 
         doc.save(path)
+        log_step('编辑文档已保存', filename=filename, total=total_sum, records=len(data_rows))
 
         # 更新缓存
         for r in results_cache:
@@ -328,6 +437,7 @@ def edit(filename):
 def download(filename):
     path = os.path.join(OUTPUT_FOLDER, filename)
     if os.path.exists(path):
+        log_step('下载文件', filename=filename)
         return send_file(path, as_attachment=True)
     return '文件不存在', 404
 
@@ -335,6 +445,7 @@ def download(filename):
 @app.route('/download/all')
 def download_all():
     zip_path = os.path.join(OUTPUT_FOLDER, 'all_documents.zip')
+    log_step('打包下载全部文件', zip_path=zip_path)
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in results_cache:
             if r.get('path') and os.path.exists(r['path']):
@@ -415,13 +526,15 @@ if __name__ == '__main__':
     import socket
     hostname = socket.gethostname()
     local_ip = socket.getaddrinfo(hostname, None)[0][4][0]
-    print(f"Flask 应用已启动!")
-    print(f"本地访问: http://localhost:5001")
-    print(f"局域网访问: http://{local_ip}:5001")
+    logger.info('Flask 应用已启动')
+    logger.info('本地访问: http://localhost:5001')
+    logger.info('日志页面: http://localhost:5001/log')
+    logger.info('局域网访问: http://%s:5001', local_ip)
     # 如果是打包后的 exe，优先尝试终止之前运行的同名实例，避免多个后台进程
     try:
         kill_previous_instances()
     except Exception:
         pass
+    logger.info('已执行旧实例清理检查')
     Timer(1.5, open_browser).start()
     app.run(host='0.0.0.0', port=5001, debug=False)
