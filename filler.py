@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 
 import pandas as pd
+from docx.oxml import OxmlElement
 from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Pt
@@ -45,6 +46,166 @@ def find_table_rows_with_yellow(table):
             if ri in rows:
                 break
     return sorted(set(rows))
+
+
+SUMMARY_TEXT_HINTS = ('大写', '人民币', '总计', '合计', '费用')
+
+
+def get_row_text(row) -> str:
+    """合并行内所有单元格文本，用于结构识别。"""
+    texts = []
+    for cell in row.cells:
+        text = cell.text.strip()
+        if text and text not in texts:
+            texts.append(text)
+    return ' '.join(texts).strip()
+
+
+def is_summary_row_text(text: str) -> bool:
+    """根据行文本判断是否像汇总行。"""
+    if not text:
+        return False
+    return any(hint in text for hint in SUMMARY_TEXT_HINTS)
+
+
+def extract_summary_label(summary_row) -> str:
+    """从模板汇总行里提取前缀文案，便于适配不同模板。"""
+    raw_text = get_row_text(summary_row)
+    if not raw_text:
+        return '费用总计'
+
+    label = raw_text
+    label = re.sub(r'人民币\s*[\d,]+(?:\.\d+)?\s*元?', '', label)
+    label = re.sub(r'（?\s*大写[:：]?\s*人民币[^）]*）?', '', label)
+    label = re.sub(r'[\d,]+(?:\.\d+)?', '', label)
+    label = re.sub(r'\s+', '', label)
+    label = label.strip('：:，,。 ')
+    return label or '费用总计'
+
+
+def build_summary_text(total_sum, summary_row=None) -> str:
+    """生成通用汇总文案，保留模板原有前缀。"""
+    label = extract_summary_label(summary_row) if summary_row is not None else '费用总计'
+    label = label.rstrip('：:，,。 ')
+    chinese_total = num_to_chinese(int(total_sum))
+    return f'{label}：人民币  {int(total_sum)}元（大写：人民币{chinese_total}）'
+
+
+def detect_table_layout(table):
+    """识别数据行与汇总行。"""
+    yellow_rows = find_table_rows_with_yellow(table)
+    if len(yellow_rows) >= 2:
+        return yellow_rows[0], yellow_rows[-1], yellow_rows
+    if len(table.rows) >= 3:
+        return 1, len(table.rows) - 1, yellow_rows
+    return None, None, yellow_rows
+
+
+def can_access_grid_offset(table, row_idx, col_idx) -> bool:
+    """判断表格某行是否真的存在指定网格列。"""
+    try:
+        table.rows[row_idx]._tr.tc_at_grid_offset(col_idx)
+        return True
+    except Exception:
+        return False
+
+
+def set_vertical_merge(cell, value):
+    """设置单元格纵向合并标记。"""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    v_merge = tc_pr.find(qn('w:vMerge'))
+    if v_merge is None:
+        v_merge = OxmlElement('w:vMerge')
+        tc_pr.append(v_merge)
+    if value is None:
+        if v_merge.get(qn('w:val')) is not None:
+            del v_merge.attrib[qn('w:val')]
+    else:
+        v_merge.set(qn('w:val'), value)
+
+
+def merge_vertical_group(table, row_indices, col_idx):
+    """对连续行分组执行纵向合并。"""
+    row_indices = sorted(set(row_indices))
+    if len(row_indices) < 2:
+        return False
+
+    merged = False
+    group_start = row_indices[0]
+    group_end = row_indices[0]
+
+    def close_group(start_idx, end_idx):
+        nonlocal merged
+        if start_idx >= end_idx:
+            return
+        if col_idx >= len(table.rows[start_idx].cells) or col_idx >= len(table.rows[end_idx].cells):
+            return
+        first_cell = table.rows[start_idx].cells[col_idx]
+        set_vertical_merge(first_cell, 'restart')
+        for ri in range(start_idx + 1, end_idx + 1):
+            if col_idx >= len(table.rows[ri].cells):
+                continue
+            set_vertical_merge(table.rows[ri].cells[col_idx], 'continue')
+        merged = True
+
+    for row_idx in row_indices[1:]:
+        if row_idx == group_end + 1:
+            group_end = row_idx
+            continue
+        close_group(group_start, group_end)
+        group_start = group_end = row_idx
+
+    close_group(group_start, group_end)
+    return merged
+
+
+def merge_total_column_span(table, row_indices, col_idx) -> bool:
+    """安全合并总计列：只合并有数值合计的明细行。"""
+    row_indices = sorted(set(row_indices))
+    if len(row_indices) < 2:
+        return False
+
+    if merge_vertical_group(table, row_indices, col_idx):
+        return True
+
+    candidate_spans = []
+    if len(row_indices) >= 3:
+        candidate_spans.append((row_indices[1], row_indices[-2]))
+    candidate_spans.append((row_indices[0], row_indices[-1]))
+
+    for span_start, span_end in candidate_spans:
+        if span_start >= span_end:
+            continue
+
+        if col_idx >= len(table.rows[span_start].cells) or col_idx >= len(table.rows[span_end].cells):
+            continue
+
+        first_total_cell = table.rows[span_start].cells[col_idx]
+        last_total_cell = table.rows[span_end].cells[col_idx]
+        if first_total_cell == last_total_cell:
+            return True
+
+        try:
+            first_total_cell.merge(last_total_cell)
+            return True
+        except ValueError:
+            continue
+
+    return False
+
+
+def has_numeric_value(value) -> bool:
+    """判断值是否为可用于合并依据的数值。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return False
+    try:
+        return not pd.isna(value)
+    except Exception:
+        return False
 
 
 def set_cell_text(cell, text):
@@ -154,18 +315,16 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
             continue
 
         table = doc.tables[0]
-        yellow_rows = find_table_rows_with_yellow(table)
+        data_row_idx, summary_row_idx, yellow_rows = detect_table_layout(table)
 
-        if len(yellow_rows) < 2:
+        if data_row_idx is None or summary_row_idx is None:
             results.append({
                 'party': party,
                 'filename': f"{party}_明细.docx",
                 'path': None,
-                'error': '表格中标黄行不足2行（数据行+汇总行）'
+                'error': '无法识别模板中的数据行和汇总行'
             })
             continue
-
-        data_row_idx = yellow_rows[0]
 
         # 获取列结构
         header_row = table.rows[0]
@@ -185,7 +344,15 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
 
         records = group.to_dict('records')
 
-        # 清空原始数据行
+        # 删除多余数据行，只保留第一个作为模板
+        existing_data_rows = max(1, summary_row_idx - data_row_idx)
+        tbl = table._tbl
+        for _ in range(existing_data_rows - 1):
+            # 删除 data_row_idx + 1（第二个数据行），反复删直到只剩一个
+            tr_to_remove = table.rows[data_row_idx + 1]._tr
+            tbl.remove(tr_to_remove)
+
+        # 清空保留的模板行
         data_row = table.rows[data_row_idx]
         for cell in data_row.cells:
             set_cell_text(cell, "")
@@ -202,12 +369,13 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
         table = doc.tables[0]
 
         # 重新定位行索引
-        yellow_rows = find_table_rows_with_yellow(table)
-        data_row_idx = yellow_rows[0]
-        summary_row_idx = yellow_rows[-1]
+        data_row_idx, summary_row_idx, _ = detect_table_layout(table)
+        if data_row_idx is None or summary_row_idx is None:
+            continue
 
         # 填充数据行
         total_sum = 0
+        merge_row_indices = []
         for i, rec in enumerate(records):
             target_row = table.rows[data_row_idx + i]
             service = str(rec.get('服务内容', ''))
@@ -217,6 +385,8 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
             if pd.isna(subtotal) or subtotal == 0:
                 subtotal = (qty or 0) * (price or 0)
             total_sum += subtotal
+            if has_numeric_value(subtotal):
+                merge_row_indices.append(data_row_idx + i)
 
             cells = target_row.cells
             if '服务内容' in col_map and col_map['服务内容'] < len(cells):
@@ -228,31 +398,25 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
             if '合计' in col_map and col_map['合计'] < len(cells):
                 set_cell_text(cells[col_map['合计']], str(int(subtotal)) if subtotal == int(subtotal) else str(subtotal))
 
-        # 填充总计列（只在第一行设置，然后纵向合并单元格）
+        # 填充总计列（只在第一行设置，然后安全地尝试纵向合并）
         total_col = col_map.get('总计', len(table.rows[0].cells) - 1)
-        first_total_cell = None
-        last_total_cell = None
         for ri in range(data_row_idx, summary_row_idx):
             row = table.rows[ri]
             if total_col < len(row.cells):
                 cell = row.cells[total_col]
                 if ri == data_row_idx:
                     set_cell_text(cell, str(int(total_sum)) if total_sum == int(total_sum) else str(total_sum))
-                    first_total_cell = cell
                 else:
                     set_cell_text(cell, "")
-                last_total_cell = cell
 
-        # 纵向合并总计列单元格（多于一行数据时才合并）
-        if first_total_cell and last_total_cell and last_total_cell != first_total_cell:
-            first_total_cell.merge(last_total_cell)
+        # 纵向合并总计列单元格：只合并“合计/元”有数值的明细行
+        merge_total_column_span(table, merge_row_indices, total_col)
 
         # 填充汇总行（合并单元格中多个 cell 可能共享同一个 XML 元素，需要去重）
         summary_row = table.rows[summary_row_idx]
         if summary_row.cells:
             seen_tc = set()
-            chinese_total = num_to_chinese(int(total_sum))
-            summary_text = f"测试费用总共为：人民币  {int(total_sum)}元（大写：人民币{chinese_total}）"
+            summary_text = build_summary_text(total_sum, summary_row)
             for cell in summary_row.cells:
                 tc = cell._tc
                 if tc in seen_tc:
@@ -267,7 +431,7 @@ def fill_template(excel_path: str, template_path: str, output_dir: str) -> list[
         person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
         safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
         safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
-        filename = f"{safe_person}_{safe_party}_{int(total_sum)}.docx"
+        filename = f"{safe_person}_{safe_party}_{int(total_sum)}元明细.docx"
         out_path = os.path.join(output_dir, filename)
         doc.save(out_path)
         results.append({

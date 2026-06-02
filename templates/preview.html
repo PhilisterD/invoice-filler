@@ -104,7 +104,7 @@
             </thead>
             <tbody>
                 {% for row in data.rows[1:] %}
-                {% set is_summary = '测试费用总共' in row.cells[0] %}
+                {% set is_summary = row.is_summary %}
                 <tr class="{% if is_summary %}summary{% endif %}">
                     {% if is_summary %}
                         {% set col_count = data.rows[0].cells|length %}

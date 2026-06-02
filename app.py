@@ -8,8 +8,15 @@ from threading import Timer
 from flask import Flask, render_template, request, send_file, redirect, url_for
 from docx import Document
 
-from filler import fill_template, set_cell_text
-from utils import num_to_chinese
+from filler import (
+    build_summary_text,
+    fill_template,
+    get_row_text,
+    is_summary_row_text,
+    has_numeric_value,
+    merge_total_column_span,
+    set_cell_text,
+)
 
 
 def get_resource_path(relative_path):
@@ -50,12 +57,15 @@ def read_docx_data(path):
         table = doc.tables[0]
         for ri, row in enumerate(table.rows):
             cells_text = [cell.text.strip() for cell in row.cells]
+            row_text = get_row_text(row)
+            is_summary = is_summary_row_text(row_text) or ri == len(table.rows) - 1
             if any(cells_text):
                 rows_data.append({
                     'index': ri,
                     'cells': cells_text,
+                    'is_summary': is_summary,
                 })
-                if '测试费用总共' in cells_text[0] or any('测试费用总共' in c for c in cells_text):
+                if is_summary:
                     summary_text = cells_text[0]
                     m = re.search(r'人民币\s*(\d+)', summary_text)
                     if m:
@@ -78,6 +88,7 @@ def index():
 def process():
     global results_cache
     excel_file = request.files.get('excel')
+    template_name = request.form.get('template', '').strip()
 
     if not excel_file:
         return '需要上传 Excel 明细表', 400
@@ -85,11 +96,25 @@ def process():
     excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
     excel_file.save(excel_path)
 
+    # 确定模板路径：自定义上传 > 预设选择 > 默认
+    custom_template_file = request.files.get('custom_template')
+    if template_name == '__custom__' and custom_template_file and custom_template_file.filename:
+        custom_path = os.path.join(UPLOAD_FOLDER, custom_template_file.filename)
+        custom_template_file.save(custom_path)
+        selected_template = custom_path
+    elif template_name:
+        selected_template = os.path.join(UPLOAD_FOLDER, template_name)
+    else:
+        selected_template = TEMPLATE_PATH
+
+    if not os.path.exists(selected_template):
+        return f'模板文件不存在: {template_name}', 400
+
     # 清空旧输出
     for f in os.listdir(OUTPUT_FOLDER):
         os.remove(os.path.join(OUTPUT_FOLDER, f))
 
-    results_cache = fill_template(excel_path, TEMPLATE_PATH, OUTPUT_FOLDER)
+    results_cache = fill_template(excel_path, selected_template, OUTPUT_FOLDER)
     return redirect(url_for('result'))
 
 
@@ -186,66 +211,61 @@ def edit(filename):
                     '合计': subtotal,
                 })
 
-            # 找到数据行和汇总行
-            from filler import find_table_rows_with_yellow
-            yellow_rows = find_table_rows_with_yellow(table)
-            if len(yellow_rows) >= 2:
-                data_row_idx = yellow_rows[0]
-                summary_row_idx = yellow_rows[-1]
+            from filler import detect_table_layout
+            data_row_idx, summary_row_idx, _ = detect_table_layout(table)
+            if data_row_idx is None or summary_row_idx is None:
+                return '无法识别模板中的数据行和汇总行', 400
 
-                # 清空所有数据行
-                for ri in range(data_row_idx, summary_row_idx):
+            # 清空所有数据行
+            for ri in range(data_row_idx, summary_row_idx):
+                row = table.rows[ri]
+                for cell in row.cells:
+                    set_cell_text(cell, '')
+
+            # 填充数据
+            total_sum = 0
+            merge_row_indices = []
+            for i, rec in enumerate(data_rows):
+                target_row = table.rows[data_row_idx + i]
+                cells = target_row.cells
+                if len(cells) > 0:
+                    set_cell_text(cells[0], rec['服务内容'])
+                if len(cells) > 1:
+                    set_cell_text(cells[1], str(int(rec['数量'])) if rec['数量'] == int(rec['数量']) else str(rec['数量']))
+                if len(cells) > 2:
+                    set_cell_text(cells[2], str(int(rec['单价'])) if rec['单价'] == int(rec['单价']) else str(rec['单价']))
+                if len(cells) > 3:
+                    set_cell_text(cells[3], str(int(rec['合计'])) if rec['合计'] == int(rec['合计']) else str(rec['合计']))
+                if len(cells) > 4:
+                    set_cell_text(cells[4], '')
+                total_sum += rec['合计']
+                if has_numeric_value(rec['合计']):
+                    merge_row_indices.append(data_row_idx + i)
+
+            # 填充总计列（安全地尝试纵向合并）
+            total_col = 4
+            if total_col < len(table.rows[0].cells):
+                for ri in range(data_row_idx, data_row_idx + len(data_rows)):
                     row = table.rows[ri]
-                    for cell in row.cells:
-                        set_cell_text(cell, '')
+                    if total_col < len(row.cells):
+                        cell = row.cells[total_col]
+                        if ri == data_row_idx:
+                            set_cell_text(cell, str(int(total_sum)) if total_sum == int(total_sum) else str(total_sum))
+                        else:
+                            set_cell_text(cell, '')
+                merge_total_column_span(table, merge_row_indices, total_col)
 
-                # 填充数据
-                total_sum = 0
-                for i, rec in enumerate(data_rows):
-                    target_row = table.rows[data_row_idx + i]
-                    cells = target_row.cells
-                    if len(cells) > 0:
-                        set_cell_text(cells[0], rec['服务内容'])
-                    if len(cells) > 1:
-                        set_cell_text(cells[1], str(int(rec['数量'])) if rec['数量'] == int(rec['数量']) else str(rec['数量']))
-                    if len(cells) > 2:
-                        set_cell_text(cells[2], str(int(rec['单价'])) if rec['单价'] == int(rec['单价']) else str(rec['单价']))
-                    if len(cells) > 3:
-                        set_cell_text(cells[3], str(int(rec['合计'])) if rec['合计'] == int(rec['合计']) else str(rec['合计']))
-                    if len(cells) > 4:
-                        set_cell_text(cells[4], '')
-                    total_sum += rec['合计']
-
-                # 填充总计列（纵向合并）
-                total_col = 4
-                if total_col < len(table.rows[0].cells):
-                    first_total_cell = None
-                    last_total_cell = None
-                    for ri in range(data_row_idx, data_row_idx + len(data_rows)):
-                        row = table.rows[ri]
-                        if total_col < len(row.cells):
-                            cell = row.cells[total_col]
-                            if ri == data_row_idx:
-                                set_cell_text(cell, str(int(total_sum)) if total_sum == int(total_sum) else str(total_sum))
-                                first_total_cell = cell
-                            else:
-                                set_cell_text(cell, '')
-                            last_total_cell = cell
-                    if first_total_cell and last_total_cell and last_total_cell != first_total_cell:
-                        first_total_cell.merge(last_total_cell)
-
-                # 填充汇总行
-                summary_row = table.rows[summary_row_idx]
-                if summary_row.cells:
-                    seen_tc = set()
-                    chinese_total = num_to_chinese(int(total_sum))
-                    summary_text = f"测试费用总共为：人民币  {int(total_sum)}元（大写：人民币{chinese_total}）"
-                    for cell in summary_row.cells:
-                        tc = cell._tc
-                        if tc in seen_tc:
-                            continue
-                        seen_tc.add(tc)
-                        set_cell_text(cell, summary_text)
+            # 填充汇总行
+            summary_row = table.rows[summary_row_idx]
+            if summary_row.cells:
+                seen_tc = set()
+                summary_text = build_summary_text(total_sum, summary_row)
+                for cell in summary_row.cells:
+                    tc = cell._tc
+                    if tc in seen_tc:
+                        continue
+                    seen_tc.add(tc)
+                    set_cell_text(cell, summary_text)
 
         doc.save(path)
 
@@ -262,7 +282,7 @@ def edit(filename):
     edit_rows = []
     for row in data['rows']:
         cells = row['cells']
-        if '测试费用总共' in cells[0]:
+        if row.get('is_summary'):
             continue
         if any(cells):
             edit_rows.append({

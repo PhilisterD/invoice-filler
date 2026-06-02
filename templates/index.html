@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>早鸟天筹明细生成器</title>
+    <title>明细生成器</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -69,6 +69,38 @@
             margin-top: 10px;
         }
         .btn:hover { background: #0550ae; }
+        .template-options {
+            display: flex;
+            gap: 10px;
+        }
+        .template-option {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 14px;
+            border: 2px solid #d0d7de;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 400;
+            transition: all 0.15s;
+        }
+        .template-option:hover {
+            border-color: #0969da;
+            background: #f0f6ff;
+        }
+        .template-option input[type="radio"]:checked + span {
+            color: #0969da;
+            font-weight: 600;
+        }
+        .template-option:has(input[type="radio"]:checked) {
+            border-color: #0969da;
+            background: #f0f6ff;
+        }
+        #custom-upload input[type="file"] {
+            margin-top: 0;
+        }
         .tips {
             margin-top: 20px;
             padding: 14px;
@@ -82,12 +114,36 @@
 </head>
 <body>
     <div class="container">
-        <h1>早鸟天筹明细生成器</h1>
-        <p class="desc">上传 Excel 明细表和 Word 模板，自动生成填充好的文档</p>
+        <h1>明细生成器</h1>
+        <p class="desc">上传 Excel 明细表，选择模板，自动生成填充好的文档</p>
         <form action="/process" method="post" enctype="multipart/form-data">
             <div class="field">
                 <label for="excel">上传 Excel 明细表</label>
                 <input type="file" name="excel" id="excel" accept=".xlsx,.xls" required>
+            </div>
+            <div class="field">
+                <label>选择模板</label>
+                <div class="template-options">
+                    <label class="template-option">
+                        <input type="radio" name="template" value="早鸟天筹明细-模板1.docx" checked>
+                        <span>早鸟天筹</span>
+                    </label>
+                    <label class="template-option">
+                        <input type="radio" name="template" value="上海辉研明细-模板1.docx">
+                        <span>上海辉研</span>
+                    </label>
+                    <label class="template-option">
+                        <input type="radio" name="template" value="狮山辉研明细-模板1.docx">
+                        <span>狮山辉研</span>
+                    </label>
+                    <label class="template-option">
+                        <input type="radio" name="template" value="__custom__" id="custom-radio">
+                        <span>自定义</span>
+                    </label>
+                </div>
+                <div id="custom-upload" style="display:none; margin-top:10px;">
+                    <input type="file" name="custom_template" id="custom-template" accept=".docx">
+                </div>
             </div>
             <button type="submit" class="btn">生成文档</button>
         </form>
@@ -98,5 +154,26 @@
             3. 生成后可在结果页重命名文件名
         </div>
     </div>
+    <script>
+        const radios = document.querySelectorAll('input[name="template"]');
+        const customUpload = document.getElementById('custom-upload');
+        const customFile = document.getElementById('custom-template');
+        radios.forEach(r => {
+            r.addEventListener('change', () => {
+                customUpload.style.display = r.value === '__custom__' && r.checked ? 'block' : 'none';
+                if (r.value === '__custom__' && r.checked) {
+                    customFile.click();
+                }
+            });
+        });
+        // form submit validation
+        document.querySelector('form').addEventListener('submit', function(e) {
+            const sel = document.querySelector('input[name="template"]:checked');
+            if (sel && sel.value === '__custom__' && !customFile.files.length) {
+                e.preventDefault();
+                alert('请选择自定义模板文件');
+            }
+        });
+    </script>
 </body>
 </html>
