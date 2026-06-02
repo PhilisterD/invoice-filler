@@ -3,7 +3,9 @@ import re
 import sys
 import webbrowser
 import zipfile
+import shutil
 from threading import Timer
+import subprocess
 
 from flask import Flask, render_template, request, send_file, redirect, url_for
 from docx import Document
@@ -27,11 +29,32 @@ def get_resource_path(relative_path):
 
 
 app = Flask(__name__)
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
-OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+# Bundled (read-only) resource uploads included in the exe by PyInstaller
+BUNDLED_UPLOADS = get_resource_path('uploads')
 TEMPLATE_PATH = get_resource_path('template.docx')
+
+# Runtime (writable) directories — when frozen, place next to the executable; otherwise next to source
+if getattr(sys, '_MEIPASS', False):
+    runtime_root = os.path.dirname(sys.executable)
+else:
+    runtime_root = os.path.dirname(os.path.abspath(__file__))
+
+UPLOAD_FOLDER = os.path.join(runtime_root, 'uploads')
+OUTPUT_FOLDER = os.path.join(runtime_root, 'output')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+# On first run, if bundled templates exist and runtime uploads is empty, copy them there for easy editing
+if os.path.exists(BUNDLED_UPLOADS) and not os.listdir(UPLOAD_FOLDER):
+    try:
+        for name in os.listdir(BUNDLED_UPLOADS):
+            src = os.path.join(BUNDLED_UPLOADS, name)
+            dst = os.path.join(UPLOAD_FOLDER, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+    except Exception:
+        # best-effort copy; don't fail startup if copy fails
+        pass
 
 results_cache = []
 
@@ -103,7 +126,15 @@ def process():
         custom_template_file.save(custom_path)
         selected_template = custom_path
     elif template_name:
-        selected_template = os.path.join(UPLOAD_FOLDER, template_name)
+        # Prefer runtime (writable) uploads, fall back to bundled templates included in the exe
+        runtime_candidate = os.path.join(UPLOAD_FOLDER, template_name)
+        bundled_candidate = os.path.join(BUNDLED_UPLOADS, template_name) if os.path.exists(BUNDLED_UPLOADS) else None
+        if os.path.exists(runtime_candidate):
+            selected_template = runtime_candidate
+        elif bundled_candidate and os.path.exists(bundled_candidate):
+            selected_template = bundled_candidate
+        else:
+            selected_template = TEMPLATE_PATH
     else:
         selected_template = TEMPLATE_PATH
 
@@ -315,6 +346,71 @@ def open_browser():
     webbrowser.open('http://localhost:5001/')
 
 
+def kill_previous_instances():
+    """When running as a frozen exe, try to kill any previously-running instances
+    of the same executable (excluding current PID). Best-effort; non-fatal."""
+    if not getattr(sys, 'frozen', False):
+        return
+    exe_name = os.path.basename(sys.executable)
+    own_pid = os.getpid()
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                pid = proc.info.get('pid')
+                name = proc.info.get('name')
+                exe = proc.info.get('exe')
+                if pid == own_pid:
+                    continue
+                if name == exe_name or (exe and os.path.basename(exe) == exe_name):
+                    proc.kill()
+            except Exception:
+                continue
+    except Exception:
+        # Fallback: use platform tools
+        if os.name == 'nt':
+            try:
+                out = subprocess.check_output(['tasklist', '/FI', f'IMAGENAME eq {exe_name}', '/FO', 'CSV', '/NH'], text=True, stderr=subprocess.DEVNULL)
+                for line in out.splitlines():
+                    parts = [p.strip().strip('"') for p in line.split(',')]
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1])
+                        except Exception:
+                            continue
+                        if pid != own_pid:
+                            subprocess.run(['taskkill', '/PID', str(pid), '/F'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        else:
+            try:
+                out = subprocess.check_output(['pgrep', '-f', exe_name], text=True)
+                for pid in out.split():
+                    try:
+                        pid_i = int(pid)
+                        if pid_i != own_pid:
+                            subprocess.run(['kill', '-9', str(pid_i)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    # Only allow local requests
+    remote = request.remote_addr or ''
+    if remote not in ('127.0.0.1', '::1', 'localhost') and not remote.startswith('192.') and remote != '0.0.0.0':
+        return 'Forbidden', 403
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func:
+        func()
+        return '服务器已关闭'
+    # If werkzeug shutdown not available (packaged differently), exit after short delay
+    Timer(0.5, lambda: os._exit(0)).start()
+    return '服务器即将关闭（不可用 werkzeug.shutdown）'
+
+
 if __name__ == '__main__':
     import socket
     hostname = socket.gethostname()
@@ -322,5 +418,10 @@ if __name__ == '__main__':
     print(f"Flask 应用已启动!")
     print(f"本地访问: http://localhost:5001")
     print(f"局域网访问: http://{local_ip}:5001")
+    # 如果是打包后的 exe，优先尝试终止之前运行的同名实例，避免多个后台进程
+    try:
+        kill_previous_instances()
+    except Exception:
+        pass
     Timer(1.5, open_browser).start()
     app.run(host='0.0.0.0', port=5001, debug=False)

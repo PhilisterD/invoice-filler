@@ -135,6 +135,9 @@
         <h1>文档生成完成</h1>
         <p class="desc">共生成 {{ results|length }} 个文档</p>
         <a href="/download/all" class="all-btn">打包下载全部</a>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:12px;">
+            <button id="stop-server" class="all-btn" style="background:#d64545; width:160px">停止后端服务</button>
+        </div>
         <table>
             <tr>
                 <th>受托方</th>
@@ -185,6 +188,15 @@
             document.querySelector('#cell-' + index + ' .rename-link').style.display = 'inline';
             document.getElementById('form-' + index).style.display = 'none';
         }
+    </script>
+    <script>
+        document.getElementById('stop-server').addEventListener('click', function() {
+            if (!confirm('确认停止后端服务？页面会断开，后端进程将退出。')) return;
+            fetch('/shutdown', { method: 'POST' })
+                .then(r => r.text())
+                .then(txt => alert(txt))
+                .catch(e => alert('请求失败: ' + e));
+        });
     </script>
 </body>
 </html>

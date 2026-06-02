@@ -24,6 +24,8 @@ if os.path.exists(os.path.join(base_dir, 'static')):
     add_data.append('--add-data=static;static')
 if os.path.exists(os.path.join(base_dir, 'template.docx')):
     add_data.append('--add-data=template.docx;.')
+if os.path.exists(os.path.join(base_dir, 'uploads')):
+    add_data.append('--add-data=uploads;uploads')
 
 
 args = [

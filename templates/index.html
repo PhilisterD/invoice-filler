@@ -147,6 +147,10 @@
             </div>
             <button type="submit" class="btn">生成文档</button>
         </form>
+        <div style="margin-top:12px; display:flex; gap:8px;">
+            <button id="stop-server" class="btn" style="background:#d64545">停止后端服务</button>
+            <span style="align-self:center;color:#666;font-size:13px;">（停止会关闭本机后端，关闭后请重启 exe）</span>
+        </div>
         <div class="tips">
             <strong>使用说明：</strong><br>
             1. Excel 中需包含"姓名"、"委托方"、"服务内容"、"数量"、"单价"、"合计"列<br>
@@ -173,6 +177,14 @@
                 e.preventDefault();
                 alert('请选择自定义模板文件');
             }
+        });
+
+        document.getElementById('stop-server').addEventListener('click', function() {
+            if (!confirm('确认停止后端服务？\n页面会断开，后端进程将退出。')) return;
+            fetch('/shutdown', { method: 'POST' })
+                .then(r => r.text())
+                .then(txt => alert(txt))
+                .catch(e => alert('请求失败: ' + e));
         });
     </script>
 </body>
