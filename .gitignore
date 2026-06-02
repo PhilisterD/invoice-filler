@@ -2,10 +2,13 @@ venv/
 __pycache__/
 *.pyc
 output/
-uploads/
 dist/
 build/
 *.spec
 .DS_Store
 test_output/
 .claude-flow/
+
+# Ignore runtime uploads except built-in templates
+uploads/*
+!uploads/*.docx

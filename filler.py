@@ -453,8 +453,8 @@ def fill_template(excel_path: str, template_path: str, output_dir: str, logger=N
 
             # ---- 5. 保存 ----
             person = str(group['姓名'].iloc[0]) if '姓名' in group.columns else ''
-            safe_person = re.sub(r'[\\/:*?"<>|]', '_', person)
-            safe_party = re.sub(r'[\\/:*?"<>|]', '_', str(party))
+            safe_person = re.sub(r'[\n\r\\/:*?"<>|]', '_', person).strip()
+            safe_party = re.sub(r'[\n\r\\/:*?"<>|]', '_', str(party)).strip()
             filename = f"{safe_person}_{safe_party}_{int(total_sum)}元明细.docx"
             out_path = os.path.join(output_dir, filename)
             doc.save(out_path)

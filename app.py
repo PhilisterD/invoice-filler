@@ -52,6 +52,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(LOG_FOLDER, exist_ok=True)
 
+# Built-in templates that ship with the application
+BUILTIN_TEMPLATES = [
+    '早鸟天筹明细-模板1.docx',
+    '上海辉研明细-模板1.docx',
+    '狮山辉研明细-模板1.docx',
+]
+
 
 def configure_logging():
     logger = logging.getLogger('invoice-filler')
@@ -86,17 +93,27 @@ def log_step(message, **fields):
     else:
         logger.info(message)
 
-# On first run, if bundled templates exist and runtime uploads is empty, copy them there for easy editing
-if os.path.exists(BUNDLED_UPLOADS) and not os.listdir(UPLOAD_FOLDER):
-    try:
-        for name in os.listdir(BUNDLED_UPLOADS):
-            src = os.path.join(BUNDLED_UPLOADS, name)
-            dst = os.path.join(UPLOAD_FOLDER, name)
-            if os.path.isfile(src):
+
+def sync_builtin_templates():
+    """Ensure all built-in templates exist in the runtime uploads folder.
+
+    This copies missing templates from the bundled (read-only) directory so that
+    users always have access to the full set even if the runtime uploads folder
+    was previously populated with only a subset (e.g. an older version)."""
+    if not os.path.exists(BUNDLED_UPLOADS):
+        return
+    for name in BUILTIN_TEMPLATES:
+        src = os.path.join(BUNDLED_UPLOADS, name)
+        dst = os.path.join(UPLOAD_FOLDER, name)
+        if os.path.isfile(src):
+            try:
                 shutil.copy2(src, dst)
-    except Exception:
-        # best-effort copy; don't fail startup if copy fails
-        pass
+            except Exception:
+                # best-effort copy; don't fail startup if copy fails
+                pass
+
+
+sync_builtin_templates()
 
 results_cache = []
 
@@ -221,17 +238,19 @@ def process():
         bundled_candidate = os.path.join(BUNDLED_UPLOADS, template_name) if os.path.exists(BUNDLED_UPLOADS) else None
         if os.path.exists(runtime_candidate):
             selected_template = runtime_candidate
+            log_step('使用运行时模板', name=template_name, path=selected_template)
         elif bundled_candidate and os.path.exists(bundled_candidate):
             selected_template = bundled_candidate
+            log_step('使用内置模板', name=template_name, path=selected_template)
         else:
-            selected_template = TEMPLATE_PATH
-        log_step('使用选择的模板', path=selected_template)
+            logger.error('找不到模板文件: %s (runtime=%s bundled=%s)', template_name, runtime_candidate, bundled_candidate)
+            return f'找不到模板文件: {template_name}', 400
     else:
         selected_template = TEMPLATE_PATH
         log_step('使用默认模板', path=selected_template)
 
     if not os.path.exists(selected_template):
-        logger.warning('模板文件不存在: %s', template_name)
+        logger.warning('模板文件不存在: %s', selected_template)
         return f'模板文件不存在: {template_name}', 400
 
     # 清空旧输出
@@ -281,7 +300,7 @@ def rename(filename):
     if not new_name.lower().endswith('.docx'):
         new_name += '.docx'
 
-    safe_name = re.sub(r'[\\/:*?"<>|]', '_', new_name)
+    safe_name = re.sub(r'[\n\r\\/:*?"<>|]', '_', new_name).strip()
     new_path = os.path.join(OUTPUT_FOLDER, safe_name)
 
     if os.path.exists(new_path) and new_path != path:
